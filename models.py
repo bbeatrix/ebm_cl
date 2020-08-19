@@ -13,7 +13,7 @@ class MnistNet(object):
     def __init__(self, num_channels=1, num_filters=64):
 
         self.channels = num_channels
-        self.dim_hidden = num_filters
+        self.dim_hidden = 200 #num_filters
         self.datasource = FLAGS.datasource
 
         if FLAGS.cclass:
@@ -31,12 +31,16 @@ class MnistNet(object):
         classes = 1
 
         with tf.variable_scope(scope):
-            init_conv_weight(weights, 'c1_pre', 3, 1, 64)
-            init_conv_weight(weights, 'c1', 4, 64, self.dim_hidden, classes=classes)
-            init_conv_weight(weights, 'c2', 4, self.dim_hidden, 2*self.dim_hidden, classes=classes)
-            init_conv_weight(weights, 'c3', 4, 2*self.dim_hidden, 4*self.dim_hidden, classes=classes)
-            init_fc_weight(weights, 'fc_dense', 4*4*4*self.dim_hidden, 2*self.dim_hidden, spec_norm=True)
-            init_fc_weight(weights, 'fc5', 2*self.dim_hidden, 1, spec_norm=False)
+            #init_conv_weight(weights, 'c1_pre', 3, 1, 64)
+            #init_conv_weight(weights, 'c1', 4, 64, self.dim_hidden, classes=classes)
+            #init_conv_weight(weights, 'c2', 4, self.dim_hidden, 2*self.dim_hidden, classes=classes)
+            #init_conv_weight(weights, 'c3', 4, 2*self.dim_hidden, 4*self.dim_hidden, classes=classes)
+            #init_fc_weight(weights, 'fc_dense', 4*4*4*self.dim_hidden, 2*self.dim_hidden, spec_norm=True)
+            #init_fc_weight(weights, 'fc5', 2*self.dim_hidden, 1, spec_norm=False)
+
+            init_fc_weight(weights, 'fc1', 784*11, self.dim_hidden, spec_norm=True)
+            init_fc_weight(weights, 'fc2', self.dim_hidden, self.dim_hidden, spec_norm=True)
+            init_fc_weight(weights, 'fc3', self.dim_hidden, 1, spec_norm=False)
 
         if FLAGS.cclass:
             self.label_size = 10
@@ -68,16 +72,20 @@ class MnistNet(object):
             label_d = tf.reshape(label, shape=(tf.shape(label)[0], 1, 1, self.label_size))
             inp = conv_cond_concat(inp, label_d)
 
-        h1 = smart_conv_block(inp, weights, reuse, 'c1_pre', use_stride=False, activation=act)
-        h2 = smart_conv_block(h1, weights, reuse, 'c1', use_stride=True, downsample=True, label=label, extra_bias=False, activation=act)
-        h3 = smart_conv_block(h2, weights, reuse, 'c2', use_stride=True, downsample=True, label=label, extra_bias=False, activation=act)
-        h4 = smart_conv_block(h3, weights, reuse, 'c3', use_stride=True, downsample=True, label=label, use_scale=False, extra_bias=False, activation=act)
+        #h1 = smart_conv_block(inp, weights, reuse, 'c1_pre', use_stride=False, activation=act)
+        #h2 = smart_conv_block(h1, weights, reuse, 'c1', use_stride=True, downsample=True, label=label, extra_bias=False, activation=act)
+        #h3 = smart_conv_block(h2, weights, reuse, 'c2', use_stride=True, downsample=True, label=label, extra_bias=False, activation=act)
+        #h4 = smart_conv_block(h3, weights, reuse, 'c3', use_stride=True, downsample=True, label=label, use_scale=False, extra_bias=False, activation=act)
 
-        h5 = tf.reshape(h4, [-1, np.prod([int(dim) for dim in h4.get_shape()[1:]])])
-        h6 = act(smart_fc_block(h5, weights, reuse, 'fc_dense'))
-        hidden6 = smart_fc_block(h6, weights, reuse, 'fc5')
+        #h5 = tf.reshape(h4, [-1, np.prod([int(dim) for dim in h4.get_shape()[1:]])])
+        #h6 = act(smart_fc_block(h5, weights, reuse, 'fc_dense'))
+        #hidden6 = smart_fc_block(h6, weights, reuse, 'fc5')
+        h0 = tf.reshape(inp, [-1, np.prod([int(dim) for dim in inp.get_shape()[1:]])])
+        h1 = act(smart_fc_block(h0, weights, reuse, 'fc1'))
+        h2 = act(smart_fc_block(h1, weights, reuse, 'fc2'))
+        out = smart_fc_block(h2, weights, reuse, 'fc3')
 
-        return hidden6
+        return out
 
 
 class DspritesNet(object):

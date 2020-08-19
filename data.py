@@ -215,12 +215,12 @@ class Cifar10(Dataset):
 
         self.full = full
         self.data = CIFAR10(
-            "/root/cifar10",
+            "/home/bbea/datasets/cifar10",
             transform=transform,
             train=train,
             download=True)
         self.test_data = CIFAR10(
-            "/root/cifar10",
+            "/home/bbea/datasets/cifar10",
             transform=transform,
             train=False,
             download=True)
@@ -286,7 +286,7 @@ class Cifar100(Dataset):
             transform = transforms.ToTensor()
 
         self.data = CIFAR100(
-            "/root/cifar100",
+            "/home/bbea/datasets/cifar100",
             transform=transform,
             train=train,
             download=True)
@@ -321,7 +321,7 @@ class Svhn(Dataset):
 
         transform = transforms.ToTensor()
 
-        self.data = SVHN("/root/svhn", transform=transform, download=True)
+        self.data = SVHN("/home/bbea/datasets/svhn", transform=transform, download=True)
         self.one_hot_map = np.eye(10)
 
     def __len__(self):
@@ -351,7 +351,7 @@ class Svhn(Dataset):
 class Mnist(Dataset):
     def __init__(self, train=True, rescale=1.0):
         self.data = MNIST(
-            "/root/mnist",
+            "/home/bbea/datasets/mnist",
             transform=transforms.ToTensor(),
             download=True, train=train)
         self.labels = np.eye(10)
