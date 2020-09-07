@@ -57,6 +57,7 @@ flags.DEFINE_integer('save_interval', 1000,'save outputs every so many batches')
 flags.DEFINE_integer('test_interval', 1000,'evaluate outputs every so many batches')
 flags.DEFINE_integer('resume_iter', -1, 'iteration to resume training from')
 flags.DEFINE_bool('train', True, 'whether to train or test')
+flags.DEFINE_bool('evaluate', True, 'whether to eval')
 flags.DEFINE_integer('epoch_num', 10000, 'Number of Epochs to train on')
 flags.DEFINE_float('lr', 3e-4, 'Learning for training')
 flags.DEFINE_integer('num_gpus', 1, 'number of gpus to train on')
@@ -165,7 +166,47 @@ def rescale_im(image):
         return (np.clip(image * 256 / FLAGS.rescale, 0, 255)).astype(np.uint8)
 
 
-def train(target_vars, saver, sess, logger, dataloaders, resume_iter, logdir):
+def test_accuracy(target_vars, saver, sess, logger, dataloader):
+    X = target_vars['X']
+    Y = target_vars['Y']
+    LABEL = target_vars['LABEL']
+    label_prediction = target_vars['predicted_label']
+
+    np.random.seed(1)
+    random.seed(1)
+
+    dataloader_iterator = iter(dataloader)
+
+    output = [label_prediction]
+    total, correct = 0, 0
+    for i in tqdm(range(50000 // FLAGS.batch_size + 1)):
+        try:
+            data_corrupt, data, label = dataloader_iterator.next()
+        except BaseException:
+            dataloader_iterator = iter(dataloader)
+            data_corrupt, data, label = dataloader_iterator.next()
+
+        data_corrupt, data, label = data_corrupt.numpy(), data.numpy(), label.numpy()
+
+        feed_dict = {X: data, Y: label}
+        if FLAGS.cclass:
+            feed_dict[LABEL] = label
+        predicted_label = sess.run(output, feed_dict)[0]
+        for i in range(FLAGS.batch_size):
+            true_class = np.argmax(label[i])
+            pred_class = np.argmax(predicted_label[i])
+            if(true_class == pred_class):
+                correct += 1
+            total += 1
+            #print('True label: ', label, '\nshape: ', label.shape)
+            #print('Predicted label: ', predicted_label[0], '\nshape: ', np.array(predicted_label[0]).shape)
+
+    accuracy = (correct / total)
+    print('Accuracy: ', accuracy)
+    return accuracy
+
+
+def train(target_vars, saver, sess, logger, dataloaders, test_dataloader, resume_iter, logdir):
     X = target_vars['X']
     Y = target_vars['Y']
     X_NOISE = target_vars['X_NOISE']
@@ -318,6 +359,11 @@ def train(target_vars, saver, sess, logger, dataloaders, resume_iter, logdir):
                             'model_{}'.format(itr)))
 
                 if itr % FLAGS.test_interval == 0 and hvd.rank() == 0 and FLAGS.dataset != '2d':
+                    if FLAGS.evaluate:
+                        print('Test.')
+                        accuracy = test_accuracy(target_vars, saver, sess, logger, test_dataloader)
+                        neptune.log_metric('test_accuracy', x=itr, y=accuracy)
+
                     try_im = x_mod
                     orig_im = data_corrupt.squeeze()
                     actual_im = rescale_im(data)
@@ -582,7 +628,8 @@ def create_loaders(dataset, num_classes=10):
     return loaders * FLAGS.num_cycles
 
 
-def main():    
+
+def main():
     use_neptune = "NEPTUNE_API_TOKEN" in os.environ
     exp_id = ''
 
@@ -791,6 +838,35 @@ def main():
                     stop_at_grad=False)]
             energy_pos = tf.concat(energy_pos, axis=0)
 
+        if FLAGS.evaluate:
+            all_label_tensor = tf.Variable(
+                tf.convert_to_tensor(
+                    np.reshape(
+                        np.tile(np.eye(10), (FLAGS.batch_size, 1, 1)),
+                        (FLAGS.batch_size * 10, 10)),
+                    dtype=tf.float32),
+                trainable=False,
+                dtype=tf.float32)
+            x_split = tf.tile(
+                tf.reshape(
+                    X_SPLIT[j], (FLAGS.batch_size, 1, 28, 28, 1)), (1, 10, 1, 1, 1))
+            x_split = tf.reshape(x_split, (FLAGS.batch_size * 10, 28, 28, 1))
+            energy_pos = model.forward(
+                x_split,
+                weights[0],
+                label=all_label_tensor,
+                stop_at_grad=True)
+
+            energy_pos_full = tf.reshape(energy_pos, (FLAGS.batch_size, 10))
+            energy_partition_est = tf.reduce_logsumexp(
+                energy_pos_full, axis=1, keepdims=True)
+            uniform = tf.random_uniform(tf.shape(energy_pos_full))
+            predicted_label_tensor = tf.argmax(-energy_pos_full -
+                tf.log(-tf.log(uniform)) - energy_partition_est, axis=1)
+            predicted_label = tf.one_hot(predicted_label_tensor, 10, dtype=tf.float32)
+            predicted_label = tf.Print(predicted_label, [predicted_label_tensor, energy_pos_full])
+
+
         print("Building graph...")
         x_mod = x_orig = X_NOISE_SPLIT[j]
 
@@ -949,6 +1025,9 @@ def main():
         target_vars['energy_pos'] = energy_pos
         target_vars['energy_start'] = energy_negs[0]
 
+        if FLAGS.evaluate:
+            target_vars['predicted_label'] = predicted_label
+
         if len(x_grads) >= 1:
             target_vars['x_grad'] = x_grads[-1]
             target_vars['x_grad_first'] = x_grads[0]
@@ -1006,8 +1085,8 @@ def main():
 
     if FLAGS.train:
         train(target_vars, saver, sess,
-              logger, train_data_loaders, resume_itr,
-              logdir)
+              logger, train_data_loaders, test_data_loader,
+              resume_itr, logdir)
 
     test(target_vars, saver, sess, logger, test_data_loader)
 
