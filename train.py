@@ -192,14 +192,12 @@ def test_accuracy(target_vars, saver, sess, logger, dataloader):
         if FLAGS.cclass:
             feed_dict[LABEL] = label
         predicted_label = sess.run(output, feed_dict)[0]
-        for i in range(FLAGS.batch_size):
-            true_class = np.argmax(label[i])
-            pred_class = np.argmax(predicted_label[i])
-            if(true_class == pred_class):
-                correct += 1
-            total += 1
-            #print('True label: ', label, '\nshape: ', label.shape)
-            #print('Predicted label: ', predicted_label[0], '\nshape: ', np.array(predicted_label[0]).shape)
+        true_class = np.argmax(label, axis=1)
+        pred_class = np.argmax(predicted_label, axis=1)
+        correct += np.count_nonzero(true_class == pred_class)
+        total += len(predicted_label)
+        print('true class: ', true_class, '\npred_class: ', pred_class)
+        print('#correct pred: ', correct, '\n#total pred: ', total)
 
     accuracy = (correct / total)
     print('Accuracy: ', accuracy)

@@ -30,6 +30,11 @@ class MnistNet(object):
 
         classes = 1
 
+        if FLAGS.cclass:
+            self.label_size = 10
+        else:
+            self.label_size = 0
+
         with tf.variable_scope(scope):
             #init_conv_weight(weights, 'c1_pre', 3, 1, 64)
             #init_conv_weight(weights, 'c1', 4, 64, self.dim_hidden, classes=classes)
@@ -38,20 +43,17 @@ class MnistNet(object):
             #init_fc_weight(weights, 'fc_dense', 4*4*4*self.dim_hidden, 2*self.dim_hidden, spec_norm=True)
             #init_fc_weight(weights, 'fc5', 2*self.dim_hidden, 1, spec_norm=False)
 
-            init_fc_weight(weights, 'fc1', 784*11, self.dim_hidden, spec_norm=True)
-            init_fc_weight(weights, 'fc2', self.dim_hidden, self.dim_hidden, spec_norm=True)
+            init_fc_weight(weights, 'fc1', 784 + self.label_size, self.dim_hidden, spec_norm=False)
+            init_fc_weight(weights, 'fc2', self.dim_hidden, self.dim_hidden, spec_norm=False)
             init_fc_weight(weights, 'fc3', self.dim_hidden, 1, spec_norm=False)
 
-        if FLAGS.cclass:
-            self.label_size = 10
-        else:
-            self.label_size = 0
         return weights
 
     def forward(self, inp, weights, reuse=False, scope='', stop_grad=False, label=None, **kwargs):
         channels = self.channels
         weights = weights.copy()
-        inp = tf.reshape(inp, (tf.shape(inp)[0], 28, 28, 1))
+        #inp = tf.reshape(inp, (tf.shape(inp)[0], 28, 28, 1))
+        inp = tf.reshape(inp, (tf.shape(inp)[0], 28*28))
 
         if FLAGS.swish_act:
             act = swish
@@ -69,8 +71,9 @@ class MnistNet(object):
                     weights[k] = tf.stop_gradient(v)
 
         if FLAGS.cclass:
-            label_d = tf.reshape(label, shape=(tf.shape(label)[0], 1, 1, self.label_size))
-            inp = conv_cond_concat(inp, label_d)
+            #label_d = tf.reshape(label, shape=(tf.shape(label)[0], 1, 1, self.label_size))
+            #inp = conv_cond_concat(inp, label_d)
+            inp = tf.concat([inp, label], axis=1)
 
         #h1 = smart_conv_block(inp, weights, reuse, 'c1_pre', use_stride=False, activation=act)
         #h2 = smart_conv_block(h1, weights, reuse, 'c1', use_stride=True, downsample=True, label=label, extra_bias=False, activation=act)
