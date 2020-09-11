@@ -4,7 +4,7 @@ from tensorflow.python.platform import flags
 import neptune
 
 from data import Imagenet, Cifar10, DSprites, Mnist, TFImagenetLoader
-from models import DspritesNet, ResNet32, ResNet32Large, ResNet32Larger, ResNet32Wider, MnistNet, ResNet128
+from models import DspritesNet, ResNet32, ResNet32Large, ResNet32Larger, ResNet32Wider, MnistNet, ResNet128, CLMnistNet
 import os.path as osp
 import os
 from baselines.logger import TensorBoardOutputFormat
@@ -90,6 +90,7 @@ flags.DEFINE_bool('use_attention', False, 'Whether to use self attention in netw
 flags.DEFINE_bool('large_model', False, 'whether to use a large model')
 flags.DEFINE_bool('larger_model', False, 'Deeper ResNet32 Network')
 flags.DEFINE_bool('wider_model', False, 'Wider ResNet32 Network')
+flags.DEFINE_bool('cl_model', False, 'Whether to use for CL the model described in the paper')
 
 # Dataset settings
 flags.DEFINE_bool('mixup', False, 'whether to add mixup to training images')
@@ -471,7 +472,7 @@ def train(target_vars, saver, sess, logger, dataloaders, test_dataloader, resume
                                 FLAGS.exp,
                                 'model_best'))
 
-                if itr > 60000 and FLAGS.dataset == "mnist":
+                if itr > 600000 and FLAGS.dataset == "mnist":
                     assert False
                 itr += 1
 
@@ -526,7 +527,7 @@ def test(target_vars, saver, sess, logger, dataloader):
             zip(orig_im, energy_orig, try_im, energy, label, actual_im)):
         label_i = np.array(label_i)
 
-        shape = im.shape[:]
+        shape = im.shape[1:]
         new_im = np.zeros((shape[0], shape[1] * 3, *shape[2:]))
         size = shape[1]
         new_im[:, :size] = im
@@ -656,11 +657,8 @@ def main():
         dataset = Cifar10(augment=FLAGS.augment, rescale=FLAGS.rescale)
         test_dataset = Cifar10(train=False, rescale=FLAGS.rescale)
         channel_num = 3
-
-        X_NOISE = tf.placeholder(shape=(None, 32, 32, 3), dtype=tf.float32)
-        X = tf.placeholder(shape=(None, 32, 32, 3), dtype=tf.float32)
-        LABEL = tf.placeholder(shape=(None, 10), dtype=tf.float32)
-        LABEL_POS = tf.placeholder(shape=(None, 10), dtype=tf.float32)
+        image_size = 32
+        label_size = 10
 
         if FLAGS.large_model:
             model = ResNet32Large(
@@ -684,10 +682,8 @@ def main():
         dataset = Imagenet(train=True)
         test_dataset = Imagenet(train=False)
         channel_num = 3
-        X_NOISE = tf.placeholder(shape=(None, 32, 32, 3), dtype=tf.float32)
-        X = tf.placeholder(shape=(None, 32, 32, 3), dtype=tf.float32)
-        LABEL = tf.placeholder(shape=(None, 1000), dtype=tf.float32)
-        LABEL_POS = tf.placeholder(shape=(None, 1000), dtype=tf.float32)
+        image_size = 32
+        label_size = 1000
 
         model = ResNet32Wider(
             num_channels=channel_num,
@@ -695,10 +691,8 @@ def main():
 
     elif FLAGS.dataset == 'imagenetfull':
         channel_num = 3
-        X_NOISE = tf.placeholder(shape=(None, 128, 128, 3), dtype=tf.float32)
-        X = tf.placeholder(shape=(None, 128, 128, 3), dtype=tf.float32)
-        LABEL = tf.placeholder(shape=(None, 1000), dtype=tf.float32)
-        LABEL_POS = tf.placeholder(shape=(None, 1000), dtype=tf.float32)
+        image_size = 128
+        label_size = 1000
 
         model = ResNet128(
             num_channels=channel_num,
@@ -708,14 +702,19 @@ def main():
         dataset = Mnist(rescale=FLAGS.rescale)
         test_dataset = dataset
         channel_num = 1
-        X_NOISE = tf.placeholder(shape=(None, 28, 28), dtype=tf.float32)
-        X = tf.placeholder(shape=(None, 28, 28), dtype=tf.float32)
-        LABEL = tf.placeholder(shape=(None, 10), dtype=tf.float32)
-        LABEL_POS = tf.placeholder(shape=(None, 10), dtype=tf.float32)
+        image_size = 28
+        label_size = 10
 
-        model = MnistNet(
-            num_channels=channel_num,
-            num_filters=FLAGS.num_filters)
+        if FLAGS.cl_model:
+            model = CLMnistNet(
+                image_size=image_size,
+                num_channels=channel_num,
+                num_filters=128)
+        else:
+            model = MnistNet(
+                image_size=image_size,
+                num_channels=channel_num,
+                num_filters=FLAGS.num_filters)
 
     elif FLAGS.dataset == 'dsprites':
         dataset = DSprites(
@@ -725,34 +724,24 @@ def main():
             cond_rot=FLAGS.cond_rot)
         test_dataset = dataset
         channel_num = 1
-
-        X_NOISE = tf.placeholder(shape=(None, 64, 64), dtype=tf.float32)
-        X = tf.placeholder(shape=(None, 64, 64), dtype=tf.float32)
+        image_size = 64
 
         if FLAGS.dpos_only:
-            LABEL = tf.placeholder(shape=(None, 2), dtype=tf.float32)
-            LABEL_POS = tf.placeholder(shape=(None, 2), dtype=tf.float32)
+            label_size = 2
         elif FLAGS.dsize_only:
-            LABEL = tf.placeholder(shape=(None, 1), dtype=tf.float32)
-            LABEL_POS = tf.placeholder(shape=(None, 1), dtype=tf.float32)
+            label_size = 1
         elif FLAGS.drot_only:
-            LABEL = tf.placeholder(shape=(None, 2), dtype=tf.float32)
-            LABEL_POS = tf.placeholder(shape=(None, 2), dtype=tf.float32)
+            label_size = 2
         elif FLAGS.cond_size:
-            LABEL = tf.placeholder(shape=(None, 1), dtype=tf.float32)
-            LABEL_POS = tf.placeholder(shape=(None, 1), dtype=tf.float32)
+            label_size = 1
         elif FLAGS.cond_shape:
-            LABEL = tf.placeholder(shape=(None, 3), dtype=tf.float32)
-            LABEL_POS = tf.placeholder(shape=(None, 3), dtype=tf.float32)
+            label_size = 3
         elif FLAGS.cond_pos:
-            LABEL = tf.placeholder(shape=(None, 2), dtype=tf.float32)
-            LABEL_POS = tf.placeholder(shape=(None, 2), dtype=tf.float32)
+            label_size = 2
         elif FLAGS.cond_rot:
-            LABEL = tf.placeholder(shape=(None, 2), dtype=tf.float32)
-            LABEL_POS = tf.placeholder(shape=(None, 2), dtype=tf.float32)
+            label_size = 2
         else:
-            LABEL = tf.placeholder(shape=(None, 3), dtype=tf.float32)
-            LABEL_POS = tf.placeholder(shape=(None, 3), dtype=tf.float32)
+            label_size = 3
 
         model = DspritesNet(
             num_channels=channel_num,
@@ -761,6 +750,15 @@ def main():
             cond_shape=FLAGS.cond_shape,
             cond_pos=FLAGS.cond_pos,
             cond_rot=FLAGS.cond_rot)
+
+    if channel_num > 1:
+        X_NOISE = tf.placeholder(shape=(None, image_size, image_size, channel_num), dtype=tf.float32)
+        X = tf.placeholder(shape=(None, image_size, image_size, channel_num), dtype=tf.float32)
+    else:
+        X_NOISE = tf.placeholder(shape=(None, image_size, image_size), dtype=tf.float32)
+        X = tf.placeholder(shape=(None, image_size, image_size), dtype=tf.float32)
+    LABEL = tf.placeholder(shape=(None, label_size), dtype=tf.float32)
+    LABEL_POS = tf.placeholder(shape=(None, label_size), dtype=tf.float32)
 
     print("Done loading...")
 
@@ -809,8 +807,8 @@ def main():
                 dtype=tf.float32)
             x_split = tf.tile(
                 tf.reshape(
-                    X_SPLIT[j], (ind_batch_size, 1, 32, 32, 3)), (1, 10, 1, 1, 1))
-            x_split = tf.reshape(x_split, (ind_batch_size * 10, 32, 32, 3))
+                    X_SPLIT[j], (ind_batch_size, 1, image_size, image_size, channel_num)), (1, 10, 1, 1, 1))
+            x_split = tf.reshape(x_split, (ind_batch_size * 10, image_size, image_size, channel_num))
             energy_pos = model.forward(
                 x_split,
                 weights[0],
@@ -847,8 +845,8 @@ def main():
                 dtype=tf.float32)
             x_split = tf.tile(
                 tf.reshape(
-                    X_SPLIT[j], (FLAGS.batch_size, 1, 28, 28, 1)), (1, 10, 1, 1, 1))
-            x_split = tf.reshape(x_split, (FLAGS.batch_size * 10, 28, 28, 1))
+                    X_SPLIT[j], (FLAGS.batch_size, 1, image_size, image_size, channel_num)), (1, label_size, 1, 1, 1))
+            x_split = tf.reshape(x_split, (FLAGS.batch_size * 10, image_size, image_size, channel_num))
             energy_pos = model.forward(
                 x_split,
                 weights[0],

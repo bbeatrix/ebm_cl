@@ -10,10 +10,81 @@ FLAGS = flags.FLAGS
 
 
 class MnistNet(object):
-    def __init__(self, num_channels=1, num_filters=64):
-
+    def __init__(self, image_size=28, num_channels=1, num_filters=64):
+        self.image_size = image_size
         self.channels = num_channels
-        self.dim_hidden = 200 #num_filters
+        self.dim_hidden = num_filters
+        self.datasource = FLAGS.datasource
+
+        if FLAGS.cclass:
+            self.label_size = 10
+        else:
+            self.label_size = 0
+
+    def construct_weights(self, scope=''):
+        weights = {}
+
+        dtype = tf.float32
+        conv_initializer =  tf.contrib.layers.xavier_initializer_conv2d(dtype=dtype)
+        fc_initializer =  tf.contrib.layers.xavier_initializer(dtype=dtype)
+
+        classes = 1
+
+        with tf.variable_scope(scope):
+            init_conv_weight(weights, 'c1_pre', 3, 1, 64)
+            init_conv_weight(weights, 'c1', 4, 64, self.dim_hidden, classes=classes)
+            init_conv_weight(weights, 'c2', 4, self.dim_hidden, 2*self.dim_hidden, classes=classes)
+            init_conv_weight(weights, 'c3', 4, 2*self.dim_hidden, 4*self.dim_hidden, classes=classes)
+            init_fc_weight(weights, 'fc_dense', 4*4*4*self.dim_hidden, 2*self.dim_hidden, spec_norm=True)
+            init_fc_weight(weights, 'fc5', 2*self.dim_hidden, 1, spec_norm=False)
+
+        if FLAGS.cclass:
+            self.label_size = 10
+        else:
+            self.label_size = 0
+        return weights
+
+    def forward(self, inp, weights, reuse=False, scope='', stop_grad=False, label=None, **kwargs):
+        channels = self.channels
+        weights = weights.copy()
+        inp = tf.reshape(inp, (tf.shape(inp)[0], self.image_size, self.image_size, 1))
+
+        if FLAGS.swish_act:
+            act = swish
+        else:
+            act = tf.nn.leaky_relu
+
+        if stop_grad:
+            for k, v in weights.items():
+                if type(v) == dict:
+                    v = v.copy()
+                    weights[k] = v
+                    for k_sub, v_sub in v.items():
+                        v[k_sub] = tf.stop_gradient(v_sub)
+                else:
+                    weights[k] = tf.stop_gradient(v)
+
+        if FLAGS.cclass:
+            label_d = tf.reshape(label, shape=(tf.shape(label)[0], 1, 1, self.label_size))
+            inp = conv_cond_concat(inp, label_d)
+
+        h1 = smart_conv_block(inp, weights, reuse, 'c1_pre', use_stride=False, activation=act)
+        h2 = smart_conv_block(h1, weights, reuse, 'c1', use_stride=True, downsample=True, label=label, extra_bias=False, activation=act)
+        h3 = smart_conv_block(h2, weights, reuse, 'c2', use_stride=True, downsample=True, label=label, extra_bias=False, activation=act)
+        h4 = smart_conv_block(h3, weights, reuse, 'c3', use_stride=True, downsample=True, label=label, use_scale=False, extra_bias=False, activation=act)
+
+        h5 = tf.reshape(h4, [-1, np.prod([int(dim) for dim in h4.get_shape()[1:]])])
+        h6 = act(smart_fc_block(h5, weights, reuse, 'fc_dense'))
+        hidden6 = smart_fc_block(h6, weights, reuse, 'fc5')
+
+        return hidden6
+
+
+class CLMnistNet(object):
+    def __init__(self, image_size=28, num_channels=1, num_filters=200):
+        self.image_size = image_size
+        self.channels = num_channels
+        self.dim_hidden = num_filters
         self.datasource = FLAGS.datasource
 
         if FLAGS.cclass:
@@ -36,14 +107,7 @@ class MnistNet(object):
             self.label_size = 0
 
         with tf.variable_scope(scope):
-            #init_conv_weight(weights, 'c1_pre', 3, 1, 64)
-            #init_conv_weight(weights, 'c1', 4, 64, self.dim_hidden, classes=classes)
-            #init_conv_weight(weights, 'c2', 4, self.dim_hidden, 2*self.dim_hidden, classes=classes)
-            #init_conv_weight(weights, 'c3', 4, 2*self.dim_hidden, 4*self.dim_hidden, classes=classes)
-            #init_fc_weight(weights, 'fc_dense', 4*4*4*self.dim_hidden, 2*self.dim_hidden, spec_norm=True)
-            #init_fc_weight(weights, 'fc5', 2*self.dim_hidden, 1, spec_norm=False)
-
-            init_fc_weight(weights, 'fc1', 784 + self.label_size, self.dim_hidden, spec_norm=False)
+            init_fc_weight(weights, 'fc1', self.image_size * self.image_size + self.label_size, self.dim_hidden, spec_norm=False)
             init_fc_weight(weights, 'fc2', self.dim_hidden, self.dim_hidden, spec_norm=False)
             init_fc_weight(weights, 'fc3', self.dim_hidden, 1, spec_norm=False)
 
@@ -52,8 +116,7 @@ class MnistNet(object):
     def forward(self, inp, weights, reuse=False, scope='', stop_grad=False, label=None, **kwargs):
         channels = self.channels
         weights = weights.copy()
-        #inp = tf.reshape(inp, (tf.shape(inp)[0], 28, 28, 1))
-        inp = tf.reshape(inp, (tf.shape(inp)[0], 28*28))
+        inp = tf.reshape(inp, (tf.shape(inp)[0], self.image_size * self.image_size))
 
         if FLAGS.swish_act:
             act = swish
@@ -71,18 +134,8 @@ class MnistNet(object):
                     weights[k] = tf.stop_gradient(v)
 
         if FLAGS.cclass:
-            #label_d = tf.reshape(label, shape=(tf.shape(label)[0], 1, 1, self.label_size))
-            #inp = conv_cond_concat(inp, label_d)
             inp = tf.concat([inp, label], axis=1)
 
-        #h1 = smart_conv_block(inp, weights, reuse, 'c1_pre', use_stride=False, activation=act)
-        #h2 = smart_conv_block(h1, weights, reuse, 'c1', use_stride=True, downsample=True, label=label, extra_bias=False, activation=act)
-        #h3 = smart_conv_block(h2, weights, reuse, 'c2', use_stride=True, downsample=True, label=label, extra_bias=False, activation=act)
-        #h4 = smart_conv_block(h3, weights, reuse, 'c3', use_stride=True, downsample=True, label=label, use_scale=False, extra_bias=False, activation=act)
-
-        #h5 = tf.reshape(h4, [-1, np.prod([int(dim) for dim in h4.get_shape()[1:]])])
-        #h6 = act(smart_fc_block(h5, weights, reuse, 'fc_dense'))
-        #hidden6 = smart_fc_block(h6, weights, reuse, 'fc5')
         h0 = tf.reshape(inp, [-1, np.prod([int(dim) for dim in inp.get_shape()[1:]])])
         h1 = act(smart_fc_block(h0, weights, reuse, 'fc1'))
         h2 = act(smart_fc_block(h1, weights, reuse, 'fc2'))
