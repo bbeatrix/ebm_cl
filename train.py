@@ -2,13 +2,14 @@ import tensorflow as tf
 import numpy as np
 from tensorflow.python.platform import flags
 import neptune
+from PIL import ImageDraw
 
 from data import Imagenet, Cifar10, DSprites, Mnist, TFImagenetLoader
 from models import DspritesNet, ResNet32, ResNet32Large, ResNet32Larger, ResNet32Wider, MnistNet, ResNet128, CLMnistNet
 import os.path as osp
 import os
 from baselines.logger import TensorBoardOutputFormat
-from utils import average_gradients, ReplayBuffer, optimistic_restore
+from utils import average_gradients, ReplayBuffer, optimistic_restore, set_seed
 from tqdm import tqdm
 import random
 from torch.utils.data import DataLoader
@@ -31,9 +32,10 @@ hvd.init()
 
 from inception import get_inception_score
 
-torch.manual_seed(hvd.rank())
-np.random.seed(hvd.rank())
-tf.set_random_seed(hvd.rank())
+set_seed(0)
+torch.manual_seed(0)
+np.random.seed(0)
+tf.set_random_seed(0)
 
 FLAGS = flags.FLAGS
 
@@ -113,6 +115,7 @@ FLAGS.batch_size *= FLAGS.num_gpus
 
 print("{} batch size".format(FLAGS.batch_size))
 
+set_seed(0)
 
 def compress_x_mod(x_mod):
     x_mod = (255 * np.clip(x_mod, 0, FLAGS.rescale) / FLAGS.rescale).astype(np.uint8)
@@ -173,8 +176,9 @@ def test_accuracy(target_vars, saver, sess, logger, dataloader):
     LABEL = target_vars['LABEL']
     label_prediction = target_vars['predicted_label']
 
-    np.random.seed(1)
-    random.seed(1)
+    set_seed(0)
+    np.random.seed(0)
+    random.seed(0)
 
     dataloader_iterator = iter(dataloader)
 
@@ -189,7 +193,7 @@ def test_accuracy(target_vars, saver, sess, logger, dataloader):
 
         data_corrupt, data, label = data_corrupt.numpy(), data.numpy(), label.numpy()
 
-        feed_dict = {X: data, Y: label}
+        feed_dict = {X: data_corrupt, Y: label}
         if FLAGS.cclass:
             feed_dict[LABEL] = label
         predicted_label = sess.run(output, feed_dict)[0]
@@ -199,6 +203,25 @@ def test_accuracy(target_vars, saver, sess, logger, dataloader):
         total += len(predicted_label)
         print('true class: ', true_class, '\npred_class: ', pred_class)
         print('#correct pred: ', correct, '\n#total pred: ', total)
+    if FLAGS.dataset == 'cifar10':
+        cifar10_map = {0: 'airplane',
+                       1: 'automobile',
+                       2: 'bird',
+                       3: 'cat',
+                       4: 'deer',
+                       5: 'dog',
+                       6: 'frog',
+                       7: 'horse',
+                       8: 'ship',
+                       9: 'truck'}
+        imgs = data
+        for idx, img  in enumerate(imgs[:20,:,:,:]):
+            neptune.log_image('test_input_images',
+                              rescale_im(imgs[idx]),
+                              description='true label: {}({}) \npredicted label: {}'.format(str(int(true_class[idx])),
+                                                                                            cifar10_map[int(true_class[idx])],
+                                                                                            str(int(pred_class[idx]))))
+
 
     accuracy = (correct / total)
     print('Accuracy: ', accuracy)
@@ -227,6 +250,10 @@ def train(target_vars, saver, sess, logger, dataloaders, test_dataloader, resume
     test_x_mod = target_vars['test_x_mod']
     eps = target_vars['eps_begin']
     label_ent = target_vars['label_ent']
+
+    set_seed(0)
+    np.random.seed(0)
+    random.seed(0)
 
     if FLAGS.use_attention:
         gamma = weights[0]['atten']['gamma']
@@ -284,6 +311,7 @@ def train(target_vars, saver, sess, logger, dataloaders, test_dataloader, resume
                 label_init = label.copy()
 
                 if FLAGS.mixup:
+                    print("HAHAHA: i mix up things")
                     idx = np.random.permutation(data.shape[0])
                     lam = np.random.beta(1, 1, size=(data.shape[0], 1, 1, 1))
                     data = data * lam + data[idx] * (1 - lam)
@@ -308,6 +336,7 @@ def train(target_vars, saver, sess, logger, dataloaders, test_dataloader, resume
                 feed_dict = {X_NOISE: data_corrupt, X: data, Y: label}
 
                 if FLAGS.cclass:
+                    print("HAHAHA: je suis class conditional")
                     feed_dict[LABEL] = label
                     feed_dict[LABEL_POS] = label_init
 
@@ -358,10 +387,31 @@ def train(target_vars, saver, sess, logger, dataloaders, test_dataloader, resume
                             'model_{}'.format(itr)))
 
                 if itr % FLAGS.test_interval == 0 and hvd.rank() == 0 and FLAGS.dataset != '2d':
+                    if FLAGS.dataset == 'cifar10':
+                        cifar10_map = {0: 'airplane',
+                                       1: 'automobile',
+                                       2: 'bird',
+                                       3: 'cat',
+                                       4: 'deer',
+                                       5: 'dog',
+                                       6: 'frog',
+                                       7: 'horse',
+                                       8: 'ship',
+                                       9: 'truck'}
+
+                        imgs = data
+                        labels = np.argmax(label, axis=1)
+                        for idx, img  in enumerate(imgs[:20,:,:,:]):
+                            neptune.log_image('input_images',
+                                              rescale_im(imgs[idx]),
+                                              description=str(int(labels[idx])) + ': ' + cifar10_map[int(labels[idx])])
+
                     if FLAGS.evaluate:
                         print('Test.')
-                        accuracy = test_accuracy(target_vars, saver, sess, logger, test_dataloader)
-                        neptune.log_metric('test_accuracy', x=itr, y=accuracy)
+                        train_acc = test_accuracy(target_vars, saver, sess, logger, dataloader)
+                        test_acc = test_accuracy(target_vars, saver, sess, logger, test_dataloader)
+                        neptune.log_metric('train_accuracy', x=itr, y=train_acc)
+                        neptune.log_metric('test_accuracy', x=itr, y=test_acc)
 
                     try_im = x_mod
                     orig_im = data_corrupt.squeeze()
@@ -401,33 +451,34 @@ def train(target_vars, saver, sess, logger, dataloaders, test_dataloader, resume
                                 0, 1, (FLAGS.batch_size)) > 0.05)
                         data_corrupt[replay_mask] = replay_batch[replay_mask]
 
-                    if FLAGS.dataset == 'cifar10' or FLAGS.dataset == 'imagenet' or FLAGS.dataset == 'imagenetfull':
-                        n = 128
+                    #if FLAGS.dataset == 'cifar10' or FLAGS.dataset == 'imagenet' or FLAGS.dataset == 'imagenetfull':
+                    #    n = 128
 
-                        if FLAGS.dataset == "imagenetfull":
-                            n = 32
+                    #    if FLAGS.dataset == "imagenetfull":
+                    #        n = 32
 
-                        if len(replay_buffer) > n:
-                            data_corrupt = decompress_x_mod(replay_buffer.sample(n))
-                        elif FLAGS.dataset == 'imagenetfull':
-                            data_corrupt = np.random.uniform(
-                                0, FLAGS.rescale, (n, 128, 128, 3))
-                        else:
-                            data_corrupt = np.random.uniform(
-                                0, FLAGS.rescale, (n, 32, 32, 3))
+                    #    if len(replay_buffer) > n:
+                    #        data_corrupt = decompress_x_mod(replay_buffer.sample(n))
+                    #    elif FLAGS.dataset == 'imagenetfull':
+                    #        data_corrupt = np.random.uniform(
+                    #            0, FLAGS.rescale, (n, 128, 128, 3))
+                    #    else:
+                    #        data_corrupt = np.random.uniform(
+                    #            0, FLAGS.rescale, (n, 32, 32, 3))
 
-                        if FLAGS.dataset == 'cifar10':
-                            label = np.eye(10)[np.random.randint(0, 10, (n))]
-                        else:
-                            label = np.eye(1000)[
-                                np.random.randint(
-                                    0, 1000, (n))]
+                    #    if FLAGS.dataset == 'cifar10':
+                    #        label = np.eye(10)[np.random.randint(0, 10, (n))]
+                    #    else:
+                    #        label = np.eye(1000)[
+                    #            np.random.randint(
+                    #                0, 1000, (n))]
 
                     feed_dict[X_NOISE] = data_corrupt
 
                     feed_dict[X] = data
 
                     if FLAGS.cclass:
+                        print("HAHAHA: feeding labels at train test.")
                         feed_dict[LABEL] = label
 
                     test_x_mod = sess.run(val_output, feed_dict)
@@ -501,8 +552,9 @@ def test(target_vars, saver, sess, logger, dataloader):
     x_mod = target_vars['test_x_mod']
     energy_neg = target_vars['energy_neg']
 
-    np.random.seed(1)
-    random.seed(1)
+    set_seed(0)
+    np.random.seed(0)
+    random.seed(0)
 
     output = [x_mod, energy_start, energy_neg]
 
@@ -627,8 +679,11 @@ def create_loaders(dataset, num_classes=10):
     return loaders * FLAGS.num_cycles
 
 
-
 def main():
+    set_seed(0)
+    np.random.seed(0)
+    random.seed(0)
+
     use_neptune = "NEPTUNE_API_TOKEN" in os.environ
     exp_id = ''
 
@@ -861,7 +916,7 @@ def main():
                 tf.log(-tf.log(uniform)) - energy_partition_est, axis=1)
             predicted_label = tf.one_hot(predicted_label_tensor, 10, dtype=tf.float32)
             predicted_label = tf.Print(predicted_label, [predicted_label_tensor, energy_pos_full])
-
+            print("HAHAHA here is your tensor: ", predicted_label)
 
         print("Building graph...")
         x_mod = x_orig = X_NOISE_SPLIT[j]
