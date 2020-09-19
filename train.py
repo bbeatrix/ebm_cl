@@ -898,16 +898,28 @@ def main():
                     dtype=tf.float32),
                 trainable=False,
                 dtype=tf.float32)
-            x_split = tf.tile(
+            X_MOD = tf.tile(
                 tf.reshape(
                     X_SPLIT[j], (FLAGS.batch_size, 1, image_size, image_size, channel_num)), (1, label_size, 1, 1, 1))
-            x_split = tf.reshape(x_split, (FLAGS.batch_size * 10, image_size, image_size, channel_num))
-            energy_pos = model.forward(
-                x_split,
-                weights[0],
-                label=all_label_tensor,
-                stop_at_grad=True)
+            X_MOD = tf.reshape(X_MOD, (FLAGS.batch_size * 10, image_size, image_size, channel_num))
+            #energy_pos = model.forward(
+            #    x_split,
+            #    weights[0],
+            #    label=all_label_tensor,
+            #    stop_at_grad=True)
+            x_min = X_MOD - 8 / 255.
+            x_max = X_MOD + 8 / 255.
+            for i in range(FLAGS.num_steps):
+                print('Langevin steps in eval')
+                X_MOD = X_MOD + tf.random_normal(tf.shape(X_MOD), mean=0.0, stddev=0.005)
+                energy_noise = model.forward(X_MOD, weights[0], label=LABEL_SPLIT[j], reuse=True)
+                x_mod_grad = tf.gradients(energy_noise, [X_MOD])[0]
 
+                if FLAGS.proj_norm != 0.0:
+                    x_mod_grad = tf.clip_by_value(x_mod_grad, -FLAGS.proj_norm, FLAGS.proj_norm)
+                X_MOD = X_MOD - FLAGS.step_lr * x_mod_grad
+                X_MOD = tf.maximum(tf.minimum(X_MOD, x_max), x_min)
+            energy_pos = model.forward(X_MOD, weights[0], label=all_label_tensor)
             energy_pos_full = tf.reshape(energy_pos, (FLAGS.batch_size, 10))
             energy_partition_est = tf.reduce_logsumexp(
                 energy_pos_full, axis=1, keepdims=True)
