@@ -46,6 +46,7 @@ flags.DEFINE_string('datasource', 'random',
 flags.DEFINE_string('dataset','mnist',
     'dsprites, cifar10, imagenet (32x32) or imagenetfull (128x128)')
 flags.DEFINE_integer('batch_size', 256, 'Size of inputs')
+flags.DEFINE_integer('test_batch_size', 8, 'Size of test inputs')
 flags.DEFINE_bool('single', False, 'whether to debug by training on a single image')
 flags.DEFINE_integer('data_workers', 4,
     'Number of different data workers to load data in parallel')
@@ -184,7 +185,7 @@ def test_accuracy(target_vars, saver, sess, logger, dataloader):
 
     output = [label_prediction]
     total, correct = 0, 0
-    for i in tqdm(range(50000 // FLAGS.batch_size + 1)):
+    for i in tqdm(range(50000 // FLAGS.test_batch_size + 1)):
         try:
             data_corrupt, data, label = dataloader_iterator.next()
         except BaseException:
@@ -228,7 +229,7 @@ def test_accuracy(target_vars, saver, sess, logger, dataloader):
     return accuracy
 
 
-def train(target_vars, saver, sess, logger, dataloaders, test_dataloader, resume_iter, logdir):
+def train(target_vars, saver, sess, logger, dataloaders, test_dataloaders, resume_iter, logdir):
     X = target_vars['X']
     Y = target_vars['Y']
     X_NOISE = target_vars['X_NOISE']
@@ -408,8 +409,8 @@ def train(target_vars, saver, sess, logger, dataloaders, test_dataloader, resume
 
                     if FLAGS.evaluate:
                         print('Test.')
-                        train_acc = test_accuracy(target_vars, saver, sess, logger, dataloader)
-                        test_acc = test_accuracy(target_vars, saver, sess, logger, test_dataloader)
+                        train_acc = test_accuracy(target_vars, saver, sess, logger, test_dataloaders[0])
+                        test_acc = test_accuracy(target_vars, saver, sess, logger, test_dataloaders[1])
                         neptune.log_metric('train_accuracy', x=itr, y=train_acc)
                         neptune.log_metric('test_accuracy', x=itr, y=test_acc)
 
@@ -822,12 +823,20 @@ def main():
         data_loader = TFImagenetLoader('train', FLAGS.batch_size, hvd.rank(), hvd.size(), rescale=FLAGS.rescale)
     else:
         train_data_loaders = create_loaders(dataset)
-        test_data_loader = DataLoader(
-            test_dataset,
-            batch_size=FLAGS.batch_size,
+        test_data_loaders = []
+        test_data_loaders.append(DataLoader(
+            dataset,
+            batch_size=FLAGS.test_batch_size,
             num_workers=FLAGS.data_workers,
             drop_last=True,
-            shuffle=True)
+            shuffle=True))
+
+        test_data_loaders.append(DataLoader(
+            test_dataset,
+            batch_size=FLAGS.test_batch_size,
+            num_workers=FLAGS.data_workers,
+            drop_last=True,
+            shuffle=True))
 
     batch_size = FLAGS.batch_size
 
@@ -893,15 +902,15 @@ def main():
             all_label_tensor = tf.Variable(
                 tf.convert_to_tensor(
                     np.reshape(
-                        np.tile(np.eye(10), (FLAGS.batch_size, 1, 1)),
-                        (FLAGS.batch_size * 10, 10)),
+                        np.tile(np.eye(10), (FLAGS.test_batch_size, 1, 1)),
+                        (FLAGS.test_batch_size * 10, 10)),
                     dtype=tf.float32),
                 trainable=False,
                 dtype=tf.float32)
             X_MOD = tf.tile(
                 tf.reshape(
-                    X_SPLIT[j], (FLAGS.batch_size, 1, image_size, image_size, channel_num)), (1, label_size, 1, 1, 1))
-            X_MOD = tf.reshape(X_MOD, (FLAGS.batch_size * 10, image_size, image_size, channel_num))
+                    X_SPLIT[j], (FLAGS.test_batch_size, 1, image_size, image_size, channel_num)), (1, label_size, 1, 1, 1))
+            X_MOD = tf.reshape(X_MOD, (FLAGS.test_batch_size * 10, image_size, image_size, channel_num))
             #energy_pos = model.forward(
             #    x_split,
             #    weights[0],
@@ -912,22 +921,21 @@ def main():
             for i in range(FLAGS.num_steps):
                 print('Langevin steps in eval')
                 X_MOD = X_MOD + tf.random_normal(tf.shape(X_MOD), mean=0.0, stddev=0.005)
-                energy_noise = model.forward(X_MOD, weights[0], label=LABEL_SPLIT[j], reuse=True)
+                energy_noise = model.forward(X_MOD, weights[0], label=all_label_tensor, reuse=True)
                 x_mod_grad = tf.gradients(energy_noise, [X_MOD])[0]
 
                 if FLAGS.proj_norm != 0.0:
                     x_mod_grad = tf.clip_by_value(x_mod_grad, -FLAGS.proj_norm, FLAGS.proj_norm)
                 X_MOD = X_MOD - FLAGS.step_lr * x_mod_grad
                 X_MOD = tf.maximum(tf.minimum(X_MOD, x_max), x_min)
-            energy_pos = model.forward(X_MOD, weights[0], label=all_label_tensor)
-            energy_pos_full = tf.reshape(energy_pos, (FLAGS.batch_size, 10))
-            energy_partition_est = tf.reduce_logsumexp(
-                energy_pos_full, axis=1, keepdims=True)
-            uniform = tf.random_uniform(tf.shape(energy_pos_full))
-            predicted_label_tensor = tf.argmax(-energy_pos_full -
-                tf.log(-tf.log(uniform)) - energy_partition_est, axis=1)
+            eval_energy_pos = model.forward(X_MOD, weights[0], label=all_label_tensor)
+            eval_energy_pos_full = tf.reshape(eval_energy_pos, (FLAGS.test_batch_size, 10))
+            eval_energy_partition_est = tf.reduce_logsumexp(eval_energy_pos_full, axis=1, keepdims=True)
+            uniform = tf.random_uniform(tf.shape(eval_energy_pos_full))
+            predicted_label_tensor = tf.argmax(-eval_energy_pos_full -
+                tf.log(-tf.log(uniform)) - eval_energy_partition_est, axis=1)
             predicted_label = tf.one_hot(predicted_label_tensor, 10, dtype=tf.float32)
-            predicted_label = tf.Print(predicted_label, [predicted_label_tensor, energy_pos_full])
+            predicted_label = tf.Print(predicted_label, [predicted_label_tensor, eval_energy_pos_full])
             print("HAHAHA here is your tensor: ", predicted_label)
 
         print("Building graph...")
@@ -1148,10 +1156,10 @@ def main():
 
     if FLAGS.train:
         train(target_vars, saver, sess,
-              logger, train_data_loaders, test_data_loader,
+              logger, train_data_loaders, test_data_loaders,
               resume_itr, logdir)
 
-    test(target_vars, saver, sess, logger, test_data_loader)
+    test(target_vars, saver, sess, logger, test_data_loaders[1])
 
     neptune.stop()
 
