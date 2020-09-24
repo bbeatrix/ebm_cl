@@ -46,7 +46,7 @@ flags.DEFINE_string('datasource', 'random',
 flags.DEFINE_string('dataset','mnist',
     'dsprites, cifar10, imagenet (32x32) or imagenetfull (128x128)')
 flags.DEFINE_integer('batch_size', 256, 'Size of inputs')
-flags.DEFINE_integer('test_batch_size', 8, 'Size of test inputs')
+flags.DEFINE_integer('test_batch_size', 256, 'Size of test inputs')
 flags.DEFINE_bool('single', False, 'whether to debug by training on a single image')
 flags.DEFINE_integer('data_workers', 4,
     'Number of different data workers to load data in parallel')
@@ -80,6 +80,7 @@ flags.DEFINE_bool('zero_kl', False, 'whether to zero out the kl loss')
 flags.DEFINE_float('proj_norm', 0.0, 'Maximum change of input images')
 flags.DEFINE_string('proj_norm_type', 'li', 'Either li or l2 ball projection')
 flags.DEFINE_integer('num_steps', 20, 'Steps of gradient descent for training')
+flags.DEFINE_integer('num_steps_in_eval', 0, 'Steps of gradient descent for eval')
 flags.DEFINE_float('step_lr', 1.0, 'Size of steps for gradient descent')
 flags.DEFINE_bool('replay_batch', False, 'Use MCMC chains initialized from a replay buffer.')
 flags.DEFINE_bool('hmc', False, 'Whether to use HMC sampling to train models')
@@ -185,7 +186,7 @@ def test_accuracy(target_vars, saver, sess, logger, dataloader):
 
     output = [label_prediction]
     total, correct = 0, 0
-    for i in tqdm(range(50000 // FLAGS.test_batch_size + 1)):
+    for i in tqdm(range(len(dataloader))):
         try:
             data_corrupt, data, label = dataloader_iterator.next()
         except BaseException:
@@ -194,9 +195,10 @@ def test_accuracy(target_vars, saver, sess, logger, dataloader):
 
         data_corrupt, data, label = data_corrupt.numpy(), data.numpy(), label.numpy()
 
-        feed_dict = {X: data_corrupt, Y: label}
+        feed_dict = {X: data, Y: label[0:1]}
         if FLAGS.cclass:
             feed_dict[LABEL] = label
+
         predicted_label = sess.run(output, feed_dict)[0]
         true_class = np.argmax(label, axis=1)
         pred_class = np.argmax(predicted_label, axis=1)
@@ -312,7 +314,6 @@ def train(target_vars, saver, sess, logger, dataloaders, test_dataloaders, resum
                 label_init = label.copy()
 
                 if FLAGS.mixup:
-                    print("HAHAHA: i mix up things")
                     idx = np.random.permutation(data.shape[0])
                     lam = np.random.beta(1, 1, size=(data.shape[0], 1, 1, 1))
                     data = data * lam + data[idx] * (1 - lam)
@@ -337,7 +338,6 @@ def train(target_vars, saver, sess, logger, dataloaders, test_dataloaders, resum
                 feed_dict = {X_NOISE: data_corrupt, X: data, Y: label}
 
                 if FLAGS.cclass:
-                    print("HAHAHA: je suis class conditional")
                     feed_dict[LABEL] = label
                     feed_dict[LABEL_POS] = label_init
 
@@ -452,34 +452,33 @@ def train(target_vars, saver, sess, logger, dataloaders, test_dataloaders, resum
                                 0, 1, (FLAGS.batch_size)) > 0.05)
                         data_corrupt[replay_mask] = replay_batch[replay_mask]
 
-                    #if FLAGS.dataset == 'cifar10' or FLAGS.dataset == 'imagenet' or FLAGS.dataset == 'imagenetfull':
-                    #    n = 128
+                    if FLAGS.dataset == 'cifar10' or FLAGS.dataset == 'imagenet' or FLAGS.dataset == 'imagenetfull':
+                        n = 128
 
-                    #    if FLAGS.dataset == "imagenetfull":
-                    #        n = 32
+                        if FLAGS.dataset == "imagenetfull":
+                            n = 32
 
-                    #    if len(replay_buffer) > n:
-                    #        data_corrupt = decompress_x_mod(replay_buffer.sample(n))
-                    #    elif FLAGS.dataset == 'imagenetfull':
-                    #        data_corrupt = np.random.uniform(
-                    #            0, FLAGS.rescale, (n, 128, 128, 3))
-                    #    else:
-                    #        data_corrupt = np.random.uniform(
-                    #            0, FLAGS.rescale, (n, 32, 32, 3))
+                        if len(replay_buffer) > n:
+                            data_corrupt = decompress_x_mod(replay_buffer.sample(n))
+                        elif FLAGS.dataset == 'imagenetfull':
+                            data_corrupt = np.random.uniform(
+                                0, FLAGS.rescale, (n, 128, 128, 3))
+                        else:
+                            data_corrupt = np.random.uniform(
+                                0, FLAGS.rescale, (n, 32, 32, 3))
 
-                    #    if FLAGS.dataset == 'cifar10':
-                    #        label = np.eye(10)[np.random.randint(0, 10, (n))]
-                    #    else:
-                    #        label = np.eye(1000)[
-                    #            np.random.randint(
-                    #                0, 1000, (n))]
+                        if FLAGS.dataset == 'cifar10':
+                            label = np.eye(10)[np.random.randint(0, 10, (n))]
+                        else:
+                            label = np.eye(1000)[
+                                np.random.randint(
+                                    0, 1000, (n))]
 
                     feed_dict[X_NOISE] = data_corrupt
 
                     feed_dict[X] = data
 
                     if FLAGS.cclass:
-                        print("HAHAHA: feeding labels at train test.")
                         feed_dict[LABEL] = label
 
                     test_x_mod = sess.run(val_output, feed_dict)
@@ -580,7 +579,7 @@ def test(target_vars, saver, sess, logger, dataloader):
             zip(orig_im, energy_orig, try_im, energy, label, actual_im)):
         label_i = np.array(label_i)
 
-        shape = im.shape[1:]
+        shape = im.shape[:]
         new_im = np.zeros((shape[0], shape[1] * 3, *shape[2:]))
         size = shape[1]
         new_im[:, :size] = im
@@ -614,7 +613,7 @@ def test(target_vars, saver, sess, logger, dataloader):
     test_ims = list(try_im)
     real_ims = list(actual_im)
 
-    for i in tqdm(range(50000 // FLAGS.batch_size + 1)):
+    for i in tqdm(range(len(dataloader))):
         try:
             data_corrupt, data, label = dataloader_iterator.next()
         except BaseException:
@@ -756,7 +755,7 @@ def main():
 
     elif FLAGS.dataset == 'mnist':
         dataset = Mnist(rescale=FLAGS.rescale)
-        test_dataset = dataset
+        test_dataset = Mnist(train=False, rescale=FLAGS.rescale)
         channel_num = 1
         image_size = 28
         label_size = 10
@@ -897,7 +896,6 @@ def main():
                     label=LABEL_POS_SPLIT[j],
                     stop_at_grad=False)]
             energy_pos = tf.concat(energy_pos, axis=0)
-
         if FLAGS.evaluate:
             all_label_tensor = tf.Variable(
                 tf.convert_to_tensor(
@@ -911,14 +909,10 @@ def main():
                 tf.reshape(
                     X_SPLIT[j], (FLAGS.test_batch_size, 1, image_size, image_size, channel_num)), (1, label_size, 1, 1, 1))
             X_MOD = tf.reshape(X_MOD, (FLAGS.test_batch_size * 10, image_size, image_size, channel_num))
-            #energy_pos = model.forward(
-            #    x_split,
-            #    weights[0],
-            #    label=all_label_tensor,
-            #    stop_at_grad=True)
+
             x_min = X_MOD - 8 / 255.
             x_max = X_MOD + 8 / 255.
-            for i in range(FLAGS.num_steps):
+            for i in range(FLAGS.num_steps_in_eval):
                 print('Langevin steps in eval')
                 X_MOD = X_MOD + tf.random_normal(tf.shape(X_MOD), mean=0.0, stddev=0.005)
                 energy_noise = model.forward(X_MOD, weights[0], label=all_label_tensor, reuse=True)
@@ -928,15 +922,11 @@ def main():
                     x_mod_grad = tf.clip_by_value(x_mod_grad, -FLAGS.proj_norm, FLAGS.proj_norm)
                 X_MOD = X_MOD - FLAGS.step_lr * x_mod_grad
                 X_MOD = tf.maximum(tf.minimum(X_MOD, x_max), x_min)
-            eval_energy_pos = model.forward(X_MOD, weights[0], label=all_label_tensor)
+
+            eval_energy_pos = model.forward(X_MOD, weights[0], label=all_label_tensor, stop_grad=True, stop_at_grad=True)
             eval_energy_pos_full = tf.reshape(eval_energy_pos, (FLAGS.test_batch_size, 10))
-            eval_energy_partition_est = tf.reduce_logsumexp(eval_energy_pos_full, axis=1, keepdims=True)
-            uniform = tf.random_uniform(tf.shape(eval_energy_pos_full))
-            predicted_label_tensor = tf.argmax(-eval_energy_pos_full -
-                tf.log(-tf.log(uniform)) - eval_energy_partition_est, axis=1)
+            predicted_label_tensor = tf.argmax(-eval_energy_pos_full, axis=1)
             predicted_label = tf.one_hot(predicted_label_tensor, 10, dtype=tf.float32)
-            predicted_label = tf.Print(predicted_label, [predicted_label_tensor, eval_energy_pos_full])
-            print("HAHAHA here is your tensor: ", predicted_label)
 
         print("Building graph...")
         x_mod = x_orig = X_NOISE_SPLIT[j]
@@ -1006,6 +996,7 @@ def main():
 
         energy_eval = model.forward(x_mod, weights[0], label=LABEL_SPLIT[j],
                                     stop_at_grad=False, reuse=True)
+
         x_grad = tf.gradients(FLAGS.temperature * energy_eval, [x_mod])[0]
         x_grads.append(x_grad)
 
