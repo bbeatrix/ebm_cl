@@ -81,7 +81,7 @@ class MnistNet(object):
 
 
 class CLMnistNet(object):
-    def __init__(self, image_size=28, num_channels=1, num_filters=200):
+    def __init__(self, image_size=28, num_channels=1, num_filters=400):
         self.image_size = image_size
         self.channels = num_channels
         self.dim_hidden = num_filters

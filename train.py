@@ -291,7 +291,7 @@ def train(target_vars, saver, sess, logger, dataloaders, test_dataloaders, resum
 
     err_message = 'Total number of epochs should be divisible by the number of CL tasks.'
     assert FLAGS.epoch_num % FLAGS.num_tasks == 0, err_message
-    epochs_per_task = FLAGS.epoch_num // FLAGS.num_tasks
+    epochs_per_task = FLAGS.epoch_num // FLAGS.num_tasks // FLAGS.num_cycles
 
     for task_index, dataloader in enumerate(dataloaders):
         dataloader_iterator = iter(dataloader)
@@ -432,7 +432,9 @@ def train(target_vars, saver, sess, logger, dataloaders, test_dataloaders, resum
 
                         log_image(
                             new_im, logger, 'train_gen_{}'.format(itr), step=i)
-                        neptune.log_image('train_gen', x=new_im)
+                        neptune.log_image('train_gen',
+                                          x=new_im,
+                                          description='train_gen_iter:{}_idx:{}'.format(itr, i))
                     test_im = x_mod
 
                     try:
@@ -501,7 +503,9 @@ def train(target_vars, saver, sess, logger, dataloaders, test_dataloaders, resum
                         new_im[:, 2 * size:] = actual_im_i
                         log_image(
                             new_im, logger, 'val_gen_{}'.format(itr), step=i)
-                        neptune.log_image('val_gen', new_im)
+                        neptune.log_image('val_gen',
+                                          new_im,
+                                          description='val_gen_iter:{}_idx:{}'.format(itr, i))
 
                     score, std = get_inception_score(list(try_im), splits=1)
                     print(
@@ -590,6 +594,13 @@ def test(target_vars, saver, sess, logger, dataloader):
             if FLAGS.dataset == 'cifar10':
                 log_image(new_im, logger, '{}_{:.4f}_now_{:.4f}_{}'.format(
                     i, energy_i[0], energy[0], cifar10_map[label_i]), step=i)
+                neptune.log_image('step_cclass_gen',
+                                  new_im,
+                                  description='cclass_gen_idx:{}_e-before{:.4f}_e-after::.4f{}_label:{}'.format(i,
+                                                                                                                energy_i[0],
+                                                                                                                energy[0],
+                                                                                                                cifar10_map[label_i]))
+
             else:
                 log_image(
                     new_im,
@@ -600,6 +611,13 @@ def test(target_vars, saver, sess, logger, dataloader):
                         energy[0],
                         label_i),
                     step=i)
+                neptune.log_image('step_cclass_gen',
+                                  new_im,
+                                  description='cclass_gen_idx:{}_e-before{:.4f}_e-after::.4f{}_label:{}'.format(i,
+                                                                                                                energy_i[0],
+                                                                                                                energy[0],
+                                                                                                                label_i))
+
         else:
             log_image(
                 new_im,
@@ -609,6 +627,12 @@ def test(target_vars, saver, sess, logger, dataloader):
                     energy_i[0],
                     energy[0]),
                 step=i)
+            neptune.log_image('step_gen',
+                              new_im,
+                              description='cclass_gen_idx:{}_e-before{:.4f}_e-after::.4f{}_label:{}'.format(i,
+                                                                                                            energy_i[0],
+                                                                                                            energy[0]))
+
 
     test_ims = list(try_im)
     real_ims = list(actual_im)
@@ -764,7 +788,7 @@ def main():
             model = CLMnistNet(
                 image_size=image_size,
                 num_channels=channel_num,
-                num_filters=128)
+                num_filters=400)
         else:
             model = MnistNet(
                 image_size=image_size,
